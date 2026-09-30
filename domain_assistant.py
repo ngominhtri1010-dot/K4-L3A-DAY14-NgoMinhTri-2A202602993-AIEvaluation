@@ -250,10 +250,29 @@ class OpenAIGenerator:
             raise RuntimeError("OPENAI_API_KEY is missing from .env")
         if not self.model:
             raise RuntimeError("OPENAI_MODEL is missing from .env")
-        self.client = OpenAI(api_key=api_key)
+        self.provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+        if self.provider not in {"openai", "openrouter"}:
+            raise ValueError("LLM_PROVIDER must be openai or openrouter")
+        self.client = (
+            OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+            if self.provider == "openrouter" else OpenAI(api_key=api_key)
+        )
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
+        if self.provider == "openrouter":
+            # Routed models may consume the token budget on reasoning first.
+            for attempt in range(2):
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_tokens=max(self.max_output_tokens, 2048) * (attempt + 1),
+                )
+                answer = (response.choices[0].message.content or "").strip()
+                if answer:
+                    return answer
+            raise RuntimeError("OpenRouter returned an empty answer after retry")
         response = self.client.responses.create(
             model=self.model,
             input=prompt,
